@@ -1,39 +1,42 @@
 import React from "react";
-import { motion } from "framer-motion";
+import { cn } from "../../lib/utils";
 
-const Card = ({
-  children,
-  className = "",
-  onClick,
-  hoverable = false,
-  ...props
-}) => {
-  return (
-    <motion.div
-      whileHover={hoverable ? { translateY: -4, shadow: "var(--shadow-lg)" } : {}}
-      className={`card ${hoverable ? "cursor-pointer" : ""} ${className}`}
-      onClick={onClick}
-      {...props}
-    >
-      {children}
-    </motion.div>
-  );
-};
-
-const CardHeader = ({ children, className = "" }) => (
-  <div className={`px-6 py-4 border-b border-surface-200 dark:border-surface-700 ${className}`}>
+const Card = ({ children, className = "", as: Tag = "div", ...props }) => (
+  <Tag
+    className={cn(
+      "rounded-xl border border-surface-200 bg-white shadow-card dark:border-surface-800 dark:bg-surface-900",
+      className
+    )}
+    {...props}
+  >
     {children}
+  </Tag>
+);
+
+const CardHeader = ({ title, description, actions, className = "" }) => (
+  <div
+    className={cn(
+      "flex flex-wrap items-start justify-between gap-3 border-b border-surface-100 px-5 py-4 dark:border-surface-800",
+      className
+    )}
+  >
+    <div className="min-w-0">
+      <h3 className="text-sm font-semibold text-surface-900 dark:text-surface-100">{title}</h3>
+      {description && <p className="mt-0.5 text-xs text-surface-500 dark:text-surface-400">{description}</p>}
+    </div>
+    {actions}
   </div>
 );
 
-const CardBody = ({ children, className = "" }) => (
-  <div className={`px-6 py-5 ${className}`}>
-    {children}
-  </div>
-);
+const CardBody = ({ children, className = "" }) => <div className={cn("p-5", className)}>{children}</div>;
 
 const CardFooter = ({ children, className = "" }) => (
-  <div className={`px-6 py-4 border-t border-surface-200 dark:border-surface-700 bg-surface-50/50 dark:bg-surface-800/50 ${className}`}>
+  <div
+    className={cn(
+      "flex items-center justify-end gap-2 rounded-b-xl border-t border-surface-100 bg-surface-50/60 px-5 py-3 dark:border-surface-800 dark:bg-surface-900/60",
+      className
+    )}
+  >
     {children}
   </div>
 );

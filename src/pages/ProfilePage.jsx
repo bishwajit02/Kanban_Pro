@@ -1,310 +1,287 @@
-import React, { useState, useRef, useEffect } from "react";
-import { auth, db } from "../../firebase";
-import { doc, getDoc, setDoc, updateDoc } from "firebase/firestore";
-import { motion, AnimatePresence } from "framer-motion";
-import {
-  FaEdit,
-  FaSave,
-  FaTimes,
-  FaUser,
-  FaCalendar,
-  FaGithub,
-  FaGoogle,
-  FaPalette,
-  FaKeyboard,
-  FaCamera,
-  FaCheckCircle,
-  FaShieldAlt,
-  FaClock,
-} from "react-icons/fa";
-import Button from "../components/ui/Button";
-import Input from "../components/ui/Input";
-import Card from "../components/ui/Card";
+import React, { useEffect, useRef, useState } from "react";
+import { doc, getDoc, setDoc } from "firebase/firestore";
+import { sendPasswordResetEmail, signOut } from "firebase/auth";
+import { FiCamera, FiCheckCircle, FiGithub, FiLogOut, FiMail, FiMonitor, FiMoon, FiSun } from "react-icons/fi";
+import { auth, db } from "../config/firebase";
+import { useTheme } from "../lib/theme";
+import { toast } from "../lib/toast";
+import { cn, readImageFile, safeUrl } from "../lib/utils";
+import PageHeader from "../components/layout/PageHeader";
+import Avatar from "../components/ui/Avatar";
 import Badge from "../components/ui/Badge";
+import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
+import Input from "../components/ui/Input";
+import { PageLoader } from "../components/ui/Spinner";
 
-const defaultProfile = (user) => {
-  let firstName = "";
-  if (user?.displayName) {
-    firstName = user.displayName.split(" ")[0];
-  } else if (user?.email) {
-    firstName = user.email.split("@")[0];
-  }
-  return {
-    name: user?.displayName || user?.email || "",
-    displayName: firstName || "User",
-    avatar: user?.photoURL || "",
-    dob: "",
-    github: "",
-    google: user?.email || "",
-    theme: "system",
-    shortcuts: "default",
-  };
-};
+const profileFromUser = (user) => ({
+  displayName: user.displayName?.split(" ")[0] || user.email?.split("@")[0] || "",
+  avatar: user.photoURL || "",
+  dob: "",
+  github: "",
+});
+
+const shortcuts = [
+  { keys: ["N"], label: "Create a new task", scope: "Board" },
+  { keys: ["/"], label: "Focus task search", scope: "Board" },
+  { keys: ["Esc"], label: "Close dialogs, clear search", scope: "Anywhere" },
+  { keys: ["Enter"], label: "Open the focused task", scope: "Board" },
+];
+
+const themeOptions = [
+  { value: "light", label: "Light", icon: FiSun },
+  { value: "dark", label: "Dark", icon: FiMoon },
+  { value: "system", label: "System", icon: FiMonitor },
+];
+
+/** Labelled settings row: description on the left, control on the right. */
+const Section = ({ title, description, children }) => (
+  <section className="grid gap-6 py-8 md:grid-cols-[16rem_1fr]">
+    <div>
+      <h2 className="text-sm font-semibold text-surface-900 dark:text-surface-100">{title}</h2>
+      <p className="mt-1 text-sm text-surface-500 dark:text-surface-400">{description}</p>
+    </div>
+    <div className="min-w-0">{children}</div>
+  </section>
+);
 
 const ProfilePage = ({ user }) => {
-  const [profile, setProfile] = useState(null);
-  const [edit, setEdit] = useState(false);
-  const [tempProfile, setTempProfile] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [saved, setSaved] = useState(null);
+  const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
-  const fileInputRef = useRef();
+  const [sendingReset, setSendingReset] = useState(false);
+  const { theme, setTheme } = useTheme();
+  const fileInputRef = useRef(null);
+  const ref = doc(db, "profiles", user.uid);
 
   useEffect(() => {
-    if (!user) return;
-    const fetchProfile = async () => {
-      const ref = doc(db, "profiles", user.uid);
-      const snap = await getDoc(ref);
-      let loadedProfile;
-      if (snap.exists()) {
-        loadedProfile = snap.data();
-        loadedProfile = {
-          ...loadedProfile,
-          name: user?.displayName || user?.email || "",
-          google: user?.email || "",
-          displayName: loadedProfile.displayName || user?.displayName?.split(" ")[0] || "User",
-        };
-      } else {
-        loadedProfile = defaultProfile(user);
-        await setDoc(ref, loadedProfile);
+    let cancelled = false;
+    (async () => {
+      const fallback = profileFromUser(user);
+      try {
+        const snap = await getDoc(doc(db, "profiles", user.uid));
+        const data = snap.exists() ? { ...fallback, ...snap.data() } : fallback;
+        if (!snap.exists()) await setDoc(doc(db, "profiles", user.uid), data);
+        if (!cancelled) {
+          setSaved(data);
+          setForm(data);
+        }
+      } catch (err) {
+        console.error("Failed to load profile", err);
+        toast.error("Couldn't load your profile. Showing account defaults.");
+        if (!cancelled) {
+          setSaved(fallback);
+          setForm(fallback);
+        }
       }
-      setProfile(loadedProfile);
-      setTempProfile(loadedProfile);
-      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
     };
-    fetchProfile();
   }, [user]);
 
-  const handleSave = async () => {
-    if (!user) return;
+  if (!form) return <PageLoader label="Loading settings…" />;
+
+  const dirty = ["displayName", "avatar", "dob", "github"].some((k) => (form[k] || "") !== (saved[k] || ""));
+  const githubUrl = form.github.trim() ? safeUrl(form.github) : "";
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+  const isPasswordUser = user.providerData.some((p) => p.providerId === "password");
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (githubUrl === null) return;
     setSaving(true);
+    const next = { ...form, displayName: form.displayName.trim(), github: githubUrl };
     try {
-      const ref = doc(db, "profiles", user.uid);
-      await updateDoc(ref, tempProfile);
-      setProfile(tempProfile);
-      setEdit(false);
-    } catch (error) {
-      console.error("Error saving profile:", error);
+      await setDoc(ref, next, { merge: true });
+      setSaved(next);
+      setForm(next);
+      toast.success("Profile saved");
+    } catch (err) {
+      console.error("Failed to save profile", err);
+      toast.error("Couldn't save your profile. Please try again.");
     } finally {
       setSaving(false);
     }
   };
 
-  const handleCancel = () => {
-    setTempProfile(profile);
-    setEdit(false);
-  };
-
-  const handleAvatarChange = (e) => {
-    const file = e.target.files[0];
+  const handleAvatar = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      setTempProfile((p) => ({ ...p, avatar: ev.target.result }));
-    };
-    reader.readAsDataURL(file);
+    try {
+      const avatar = await readImageFile(file, 256, 0.85);
+      setForm((f) => ({ ...f, avatar }));
+    } catch (err) {
+      toast.error(err.message);
+    }
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-[60vh] flex items-center justify-center">
-        <div className="w-12 h-12 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin"></div>
-      </div>
-    );
-  }
+  const handlePasswordReset = async () => {
+    setSendingReset(true);
+    try {
+      await sendPasswordResetEmail(auth, user.email);
+      toast.success(`Reset link sent to ${user.email}`);
+    } catch {
+      toast.error("Couldn't send the reset email. Please try again later.");
+    } finally {
+      setSendingReset(false);
+    }
+  };
+
+  const fmt = (value) =>
+    value ? new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "—";
 
   return (
-    <div className="container mx-auto py-12 px-6">
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="max-w-5xl mx-auto space-y-10"
-      >
-        {/* Header */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div>
-            <h1 className="text-4xl font-black text-surface-900 dark:text-surface-100">
-              Profile Settings
-            </h1>
-            <p className="text-lg text-surface-500 dark:text-surface-400 font-medium mt-1">
-              Manage your personal information and preferences
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            {edit ? (
-              <>
-                <Button variant="ghost" onClick={handleCancel} disabled={saving}>
-                  Cancel
-                </Button>
-                <Button onClick={handleSave} isLoading={saving} leftIcon={FaSave}>
-                  Save Changes
-                </Button>
-              </>
-            ) : (
-              <Button onClick={() => setEdit(true)} leftIcon={FaEdit}>
-                Edit Profile
-              </Button>
-            )}
-          </div>
-        </div>
+    <div className="flex-1">
+      <PageHeader title="Settings" description="Manage your profile, appearance and account." />
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Main Content */}
-          <div className="lg:col-span-2 space-y-8">
-            {/* Identity Card */}
-            <Card className="p-8 md:p-10 rounded-3xl overflow-visible border-surface-200 dark:border-surface-800 shadow-xl">
-              <div className="flex flex-col md:flex-row items-center gap-8 mb-10">
-                <div className="relative group">
-                  <div className="w-32 h-32 rounded-3xl overflow-hidden border-4 border-white dark:border-surface-800 shadow-2xl transition-transform duration-500 group-hover:scale-105">
-                    <img
-                      src={edit ? tempProfile.avatar : profile.avatar}
-                      alt=""
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(
-                          profile.displayName
-                        )}&background=0ea5e9&color=fff&size=128`;
-                      }}
-                    />
-                  </div>
-                  {edit && (
+      <div className="mx-auto max-w-5xl divide-y divide-surface-200 px-4 sm:px-6 lg:px-8 dark:divide-surface-800">
+        <Section title="Profile" description="How you appear across your workspace.">
+          <Card as="form" onSubmit={handleSave}>
+            <Card.Body className="space-y-5">
+              <div className="flex items-center gap-4">
+                <div className="relative">
+                  <Avatar name={user.displayName || user.email} src={form.avatar} size="xl" />
+                  <button
+                    type="button"
+                    aria-label="Change photo"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="absolute -right-1 -bottom-1 flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-surface-900 text-white transition-colors hover:bg-primary-600 dark:border-surface-900 dark:bg-surface-700"
+                  >
+                    <FiCamera className="h-3.5 w-3.5" />
+                  </button>
+                  <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleAvatar} />
+                </div>
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-surface-900 dark:text-surface-100">
+                    {user.displayName || form.displayName || "Unnamed user"}
+                  </p>
+                  <p className="truncate text-sm text-surface-500">{user.email}</p>
+                  {form.avatar && (
                     <button
-                      onClick={() => fileInputRef.current?.click()}
-                      className="absolute -bottom-3 -right-3 w-10 h-10 bg-primary-600 text-white rounded-xl shadow-lg border-2 border-white dark:border-surface-900 flex items-center justify-center hover:bg-primary-700 transition-colors"
+                      type="button"
+                      onClick={() => setForm((f) => ({ ...f, avatar: "" }))}
+                      className="mt-1 text-xs text-surface-500 hover:text-error-600"
                     >
-                      <FaCamera className="w-4 h-4" />
+                      Remove photo
                     </button>
                   )}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    className="hidden"
-                    onChange={handleAvatarChange}
-                  />
-                </div>
-                <div className="text-center md:text-left space-y-2">
-                  <h2 className="text-3xl font-black text-surface-900 dark:text-surface-100">
-                    {profile.displayName}
-                  </h2>
-                  <div className="flex flex-wrap justify-center md:justify-start gap-3">
-                    <Badge variant="primary" size="sm" dot>Active Member</Badge>
-                    <Badge variant="surface" size="sm" icon={FaClock}>Joined {new Date(user.metadata.creationTime).toLocaleDateString()}</Badge>
-                  </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Input label="Display name" value={form.displayName} onChange={set("displayName")} maxLength={40} />
+                <Input label="Full name" value={user.displayName || ""} disabled hint="Managed by your sign-in provider." />
+                <Input label="Date of birth" type="date" value={form.dob} onChange={set("dob")} />
                 <Input
-                  label="Display Name"
-                  disabled={!edit}
-                  value={edit ? tempProfile.displayName : profile.displayName}
-                  onChange={(e) => setTempProfile(p => ({ ...p, displayName: e.target.value }))}
-                  leftIcon={FaUser}
-                  className="py-3.5 rounded-2xl"
-                />
-                <Input
-                  label="Full Name"
-                  disabled
-                  value={profile.name}
-                  leftIcon={FaUser}
-                  className="py-3.5 rounded-2xl opacity-70"
-                />
-                <Input
-                  label="Date of Birth"
-                  type="date"
-                  disabled={!edit}
-                  value={edit ? tempProfile.dob : profile.dob}
-                  onChange={(e) => setTempProfile(p => ({ ...p, dob: e.target.value }))}
-                  leftIcon={FaCalendar}
-                  className="py-3.5 rounded-2xl"
-                />
-                <Input
-                  label="GitHub Profile"
-                  disabled={!edit}
-                  value={edit ? tempProfile.github : profile.github}
-                  onChange={(e) => setTempProfile(p => ({ ...p, github: e.target.value }))}
-                  leftIcon={FaGithub}
+                  label="GitHub"
                   placeholder="github.com/username"
-                  className="py-3.5 rounded-2xl"
+                  leftIcon={FiGithub}
+                  value={form.github}
+                  onChange={set("github")}
+                  error={githubUrl === null ? "Enter a valid http(s) link." : undefined}
                 />
               </div>
-            </Card>
+            </Card.Body>
+            <Card.Footer>
+              {dirty && <span className="mr-auto text-xs text-surface-500">You have unsaved changes</span>}
+              <Button variant="ghost" disabled={!dirty || saving} onClick={() => setForm(saved)}>
+                Discard
+              </Button>
+              <Button type="submit" disabled={!dirty || githubUrl === null} isLoading={saving}>
+                Save changes
+              </Button>
+            </Card.Footer>
+          </Card>
+        </Section>
 
-            {/* Preferences */}
-            <Card className="p-8 md:p-10 rounded-3xl border-surface-200 dark:border-surface-800 shadow-xl">
-              <h3 className="text-xl font-black text-surface-900 dark:text-surface-100 mb-8 flex items-center gap-3">
-                <FaPalette className="text-primary-500" />
-                App Preferences
-              </h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                <div className="space-y-3">
-                  <label className="block text-sm font-black text-surface-700 dark:text-surface-300 uppercase tracking-widest">
-                    Theme Mode
-                  </label>
-                  <select
-                    disabled={!edit}
-                    value={edit ? tempProfile.theme : profile.theme}
-                    onChange={(e) => setTempProfile(p => ({ ...p, theme: e.target.value }))}
-                    className="input py-3.5 rounded-2xl appearance-none bg-no-repeat bg-[right_1rem_center]"
-                    style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='currentColor'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`, backgroundSize: '1.5rem' }}
-                  >
-                    <option value="system">System Preference</option>
-                    <option value="light">Always Light</option>
-                    <option value="dark">Always Dark</option>
-                  </select>
-                </div>
-                <Input
-                  label="Keyboard Shortcuts"
-                  disabled={!edit}
-                  value={edit ? tempProfile.shortcuts : profile.shortcuts}
-                  onChange={(e) => setTempProfile(p => ({ ...p, shortcuts: e.target.value }))}
-                  leftIcon={FaKeyboard}
-                  className="py-3.5 rounded-2xl"
-                />
-              </div>
-            </Card>
+        <Section title="Appearance" description="Choose how KanbanPro looks on this device.">
+          <div className="grid max-w-md grid-cols-3 gap-3">
+            {themeOptions.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                aria-pressed={theme === opt.value}
+                onClick={() => setTheme(opt.value)}
+                className={cn(
+                  "flex flex-col items-center gap-2 rounded-xl border bg-white p-4 text-sm transition-all dark:bg-surface-900",
+                  theme === opt.value
+                    ? "border-primary-500 font-medium text-surface-900 ring-4 ring-primary-500/15 dark:text-surface-50"
+                    : "border-surface-200 text-surface-600 hover:border-surface-300 dark:border-surface-800 dark:text-surface-400 dark:hover:border-surface-700"
+                )}
+              >
+                <opt.icon className="h-5 w-5" />
+                {opt.label}
+              </button>
+            ))}
           </div>
+        </Section>
 
-          {/* Sidebar Info */}
-          <div className="space-y-8">
-            <Card className="p-8 rounded-3xl border-surface-200 dark:border-surface-800 shadow-xl bg-gradient-to-br from-white to-surface-50 dark:from-surface-900 dark:to-surface-800">
-              <h3 className="text-xl font-black text-surface-900 dark:text-surface-100 mb-6 flex items-center gap-3">
-                <FaShieldAlt className="text-primary-500" />
-                Account Security
-              </h3>
-              <div className="space-y-6">
-                <div className="p-4 rounded-2xl bg-white dark:bg-surface-800 border border-surface-100 dark:border-surface-700 shadow-sm">
-                  <p className="text-xs font-black text-surface-400 uppercase tracking-widest mb-1">Email</p>
-                  <p className="font-bold text-surface-700 dark:text-surface-200">{user.email}</p>
+        <Section title="Keyboard shortcuts" description="Move faster without reaching for the mouse.">
+          <Card className="divide-y divide-surface-100 dark:divide-surface-800">
+            {shortcuts.map((s) => (
+              <div key={s.label} className="flex items-center justify-between gap-4 px-4 py-3 text-sm">
+                <div>
+                  <span className="text-surface-800 dark:text-surface-200">{s.label}</span>
+                  <span className="ml-2 text-xs text-surface-400">{s.scope}</span>
                 </div>
-                <div className="p-4 rounded-2xl bg-white dark:bg-surface-800 border border-surface-100 dark:border-surface-700 shadow-sm">
-                  <p className="text-xs font-black text-surface-400 uppercase tracking-widest mb-2">Status</p>
-                  {user.emailVerified ? (
-                    <Badge variant="success" icon={FaCheckCircle}>Verified Account</Badge>
-                  ) : (
-                    <Badge variant="warning">Verification Pending</Badge>
-                  )}
+                <div className="flex gap-1">
+                  {s.keys.map((k) => (
+                    <kbd key={k} className="kbd">
+                      {k}
+                    </kbd>
+                  ))}
                 </div>
-                <div className="p-4 rounded-2xl bg-white dark:bg-surface-800 border border-surface-100 dark:border-surface-700 shadow-sm">
-                  <p className="text-xs font-black text-surface-400 uppercase tracking-widest mb-1">Last Logged In</p>
-                  <p className="font-bold text-surface-700 dark:text-surface-200">
-                    {new Date(user.metadata.lastSignInTime).toLocaleString()}
+              </div>
+            ))}
+          </Card>
+        </Section>
+
+        <Section title="Account" description="Sign-in details and security.">
+          <Card className="divide-y divide-surface-100 dark:divide-surface-800">
+            <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5">
+              <div className="flex items-center gap-3">
+                <FiMail className="h-4 w-4 text-surface-400" />
+                <div>
+                  <p className="text-sm font-medium text-surface-900 dark:text-surface-100">{user.email}</p>
+                  <p className="text-xs text-surface-500">
+                    Member since {new Date(user.metadata.creationTime).toLocaleDateString(undefined, { dateStyle: "medium" })}
+                    {" · "}Last sign-in {fmt(user.metadata.lastSignInTime)}
                   </p>
                 </div>
               </div>
-            </Card>
-
-            <Card className="p-8 rounded-3xl border-2 border-dashed border-surface-200 dark:border-surface-800 bg-transparent text-center space-y-4">
-              <div className="w-16 h-16 rounded-full bg-surface-100 dark:bg-surface-800 flex items-center justify-center mx-auto text-surface-400">
-                <FaShieldAlt className="w-6 h-6" />
+              {user.emailVerified ? (
+                <Badge variant="success" icon={FiCheckCircle}>
+                  Verified
+                </Badge>
+              ) : (
+                <Badge variant="warning">Unverified</Badge>
+              )}
+            </div>
+            {isPasswordUser && (
+              <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5">
+                <div>
+                  <p className="text-sm font-medium text-surface-900 dark:text-surface-100">Password</p>
+                  <p className="text-xs text-surface-500">We'll email you a secure link to set a new password.</p>
+                </div>
+                <Button variant="secondary" size="sm" isLoading={sendingReset} onClick={handlePasswordReset}>
+                  Send reset link
+                </Button>
               </div>
-              <p className="text-sm font-bold text-surface-500">Need to change your password or delete your account?</p>
-              <Button variant="ghost" className="w-full text-error-500 hover:bg-error-50">
-                Advanced Security
+            )}
+            <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5">
+              <div>
+                <p className="text-sm font-medium text-surface-900 dark:text-surface-100">Sign out</p>
+                <p className="text-xs text-surface-500">End your session on this device.</p>
+              </div>
+              <Button variant="danger-ghost" size="sm" leftIcon={FiLogOut} onClick={() => signOut(auth)}>
+                Sign out
               </Button>
-            </Card>
-          </div>
-        </div>
-      </motion.div>
+            </div>
+          </Card>
+        </Section>
+      </div>
     </div>
   );
 };

@@ -18,12 +18,13 @@ A modern, high-performance, and visually stunning Kanban management system inspi
 - **Smart Mentions:** Assign team members using an intuitive `@mention` system.
 - **Visual Priorities:** Instant visual cues with color-coded ribbons and badges.
 
-### 💡 Idea Dump (Creative Workspace)
+### 💡 Ideas (Infinite Canvases)
 
-- **Multi-format Capture:** Quickly save sticky notes, text snippets, images, and external links.
-- **Folder Organization:** Categorize your creative sparks into custom folders.
-- **YouTube Integration:** Paste a link and watch videos directly within your workspace.
-- **Persistent Memory:** Local storage and cloud sync keep your ideas safe.
+- **PureRef-style canvases:** Pan, zoom and arrange references on an infinite canvas. Paste or drop anything — images, screenshots, files, text and links.
+- **Embeds:** YouTube, Vimeo, Loom, Streamable, Dailymotion, Google Drive, Spotify, Figma, CodePen and direct video files play right on the canvas.
+- **Lightweight images:** The canvas shows a 360p thumbnail; clicking opens the full-quality original.
+- **Folders & canvases:** Each folder holds as many canvases as you need. Folder names are unique per owner (enforced by Firestore rules).
+- **Sharing:** Invite people by email to a folder as **Visitor** (view), **Commenter** (view + pinned comments) or **Editor** (full edit). Invitees must sign in with that Google account or a verified email.
 
 ### 📊 Multi-View Dashboard
 
@@ -82,7 +83,7 @@ Auto-create cards from GitHub Issues and send notifications to Slack channels wh
    ```
 
 3. **Configure Firebase:**
-   Create a `firebase.js` in the root (or update existing) with your credentials:
+   Update `src/config/firebase.js` with your credentials:
 
    ```javascript
    const firebaseConfig = {
@@ -93,10 +94,34 @@ Auto-create cards from GitHub Issues and send notifications to Slack channels wh
    };
    ```
 
-4. **Run Development Server:**
+4. **Deploy the Firestore security rules** (required for Ideas and sharing):
+
+   ```bash
+   firebase deploy --only firestore:rules
+   ```
+
+5. **Run Development Server:**
    ```bash
    npm run dev
    ```
+
+### Local development with the Firebase emulators
+
+Requires Java 11+. Runs Auth and Firestore locally with the same rules, so nothing touches production:
+
+```bash
+npm run emulators       # terminal 1
+npm run dev:emulators   # terminal 2
+```
+
+### How Ideas are stored
+
+Everything lives in Firestore, so no paid Storage bucket is needed:
+
+- `ideaFolders/{id}` — name, owner, `members` (email → role) and `memberEmails`
+- `ideaFolderNames/{ownerUid}_{name}` — reserves a folder name so duplicates are rejected server-side
+- `ideaFolders/{id}/canvases/{id}/items|comments` — canvas content (thumbnails are stored inline)
+- `ideaFolders/{id}/assets/{id}/chunks/{n}` — full-quality originals split into ~900 KB chunks (max 25 MB per file)
 
 ---
 

@@ -1,0 +1,186 @@
+rules_version = '2';
+
+// Deploy with: firebase deploy --only firestore:rules
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Sharing is keyed by email, so only trust emails the provider has verified
+    // (always true for Google sign-in). Otherwise anyone could register an
+    // email/password account under someone else's address.
+    function verified() {
+      return signedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email_verified == true;
+    }
+
+    function myEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    // ---- Personal data -------------------------------------------------------
+
+    match /boards/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /profiles/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    // ---- Ideas: folders, canvases and sharing ----------------------------------
+
+    function folderDoc(folderId) {
+      return get(/databases/$(database)/documents/ideaFolders/$(folderId)).data;
+    }
+
+    function nameLockPath(ownerId, nameLower) {
+      return /databases/$(database)/documents/ideaFolderNames/$(ownerId + '_' + nameLower);
+    }
+
+    function isOwner(f) {
+      return signedIn() && f.ownerId == request.auth.uid;
+    }
+
+    function hasRole(f, roles) {
+      return isOwner(f)
+        || (verified() && myEmail() in f.members && f.members[myEmail()] in roles);
+    }
+
+    function canRead(f) {
+      return hasRole(f, ['viewer', 'commenter', 'editor']);
+    }
+
+    function canComment(f) {
+      return hasRole(f, ['commenter', 'editor']);
+    }
+
+    function canEdit(f) {
+      return hasRole(f, ['editor']);
+    }
+
+    function validFolder(d) {
+      return d.name is string
+        && d.name.size() > 0 && d.name.size() <= 60
+        && d.name == d.name.trim()
+        && !d.name.matches('.*/.*')
+        && d.nameLower == d.name.lower()
+        && d.members is map
+        && d.memberEmails is list
+        && d.memberEmails.size() <= 50
+        && d.members.keys().hasAll(d.memberEmails)
+        && d.memberEmails.hasAll(d.members.keys())
+        && d.members.values().hasOnly(['viewer', 'commenter', 'editor']);
+    }
+
+    // Optional URL fields must be plain http(s): they end up in href / iframe
+    // src for every member, so "javascript:" etc. would be stored XSS.
+    function httpUrlOrAbsent(d, field) {
+      return !(field in d) || d[field] == null
+        || (d[field] is string && d[field].size() <= 2048 && d[field].matches('^https?://[^\\s]+$'));
+    }
+
+    function validItem(d) {
+      return d.type in ['image', 'video', 'embed', 'link', 'note', 'sticky', 'file']
+        && d.x is number && d.y is number && d.w is number && d.h is number
+        && httpUrlOrAbsent(d, 'url')
+        && httpUrlOrAbsent(d, 'src')
+        && httpUrlOrAbsent(d, 'embedUrl')
+        && httpUrlOrAbsent(d, 'videoSrc')
+        && (!('thumb' in d) || d.thumb == null
+          || (d.thumb is string && d.thumb.size() <= 400000
+            && (d.thumb.matches('^data:image/(webp|jpeg|png);base64,.*') || d.thumb.matches('^https://i\\.ytimg\\.com/.*'))))
+        && (!('text' in d) || (d.text is string && d.text.size() <= 20000));
+    }
+
+    // A folder name is reserved by a lock document whose id is
+    // "<ownerUid>_<lowercased name>". Firestore can only *create* a document that
+    // doesn't exist yet, so two folders of one owner can never share a name.
+    match /ideaFolderNames/{key} {
+      allow read: if signedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && key == request.auth.uid + '_' + request.resource.data.nameLower
+        && getAfter(/databases/$(database)/documents/ideaFolders/$(request.resource.data.folderId)).data.ownerId == request.auth.uid
+        && getAfter(/databases/$(database)/documents/ideaFolders/$(request.resource.data.folderId)).data.nameLower == request.resource.data.nameLower;
+      // Released only when its folder is deleted or renamed in the same write.
+      allow delete: if signedIn()
+        && resource.data.ownerId == request.auth.uid
+        && (!existsAfter(/databases/$(database)/documents/ideaFolders/$(resource.data.folderId))
+          || getAfter(/databases/$(database)/documents/ideaFolders/$(resource.data.folderId)).data.nameLower != resource.data.nameLower);
+    }
+
+    match /ideaFolders/{folderId} {
+      allow read: if signedIn()
+        && (resource.data.ownerId == request.auth.uid
+          || (verified() && myEmail() in resource.data.memberEmails));
+
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && validFolder(request.resource.data)
+        && getAfter(nameLockPath(request.auth.uid, request.resource.data.nameLower)).data.folderId == folderId;
+
+      // Only the owner renames or manages members.
+      allow update: if isOwner(resource.data)
+        && request.resource.data.ownerId == resource.data.ownerId
+        && validFolder(request.resource.data)
+        && (request.resource.data.nameLower == resource.data.nameLower
+          || getAfter(nameLockPath(request.auth.uid, request.resource.data.nameLower)).data.folderId == folderId);
+
+      allow delete: if isOwner(resource.data);
+
+      match /canvases/{canvasId} {
+        allow read: if canRead(folderDoc(folderId));
+        allow create, update: if canEdit(folderDoc(folderId))
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 80;
+        allow delete: if canEdit(folderDoc(folderId));
+
+        match /items/{itemId} {
+          allow read: if canRead(folderDoc(folderId));
+          allow create, update: if canEdit(folderDoc(folderId)) && validItem(request.resource.data);
+          allow delete: if canEdit(folderDoc(folderId));
+        }
+
+        match /comments/{commentId} {
+          allow read: if canRead(folderDoc(folderId));
+
+          allow create: if canComment(folderDoc(folderId))
+            && request.resource.data.authorUid == request.auth.uid
+            && request.resource.data.text is string
+            && request.resource.data.text.size() > 0
+            && request.resource.data.text.size() <= 2000
+            && request.resource.data.replies.size() == 0;
+
+          // Replies may only be appended, and only in the replier's own name.
+          allow update: if canComment(folderDoc(folderId))
+            && (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['resolved', 'resolvedBy'])
+              || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['replies'])
+                && request.resource.data.replies.size() == resource.data.replies.size() + 1
+                && request.resource.data.replies.hasAll(resource.data.replies)
+                && !(request.resource.data.replies[resource.data.replies.size()] in resource.data.replies)
+                && request.resource.data.replies[resource.data.replies.size()].authorUid == request.auth.uid
+                && request.resource.data.replies[resource.data.replies.size()].text.size() <= 2000));
+
+          allow delete: if canEdit(folderDoc(folderId))
+            || (canComment(folderDoc(folderId)) && resource.data.authorUid == request.auth.uid);
+        }
+      }
+
+      // Full-quality originals, stored as byte chunks (see src/lib/ideas/assets.js).
+      match /assets/{assetId} {
+        allow read: if canRead(folderDoc(folderId));
+        allow create, update, delete: if canEdit(folderDoc(folderId));
+
+        match /chunks/{chunkId} {
+          allow read: if canRead(folderDoc(folderId));
+          allow create, update, delete: if canEdit(folderDoc(folderId));
+        }
+      }
+    }
+  }
+}
